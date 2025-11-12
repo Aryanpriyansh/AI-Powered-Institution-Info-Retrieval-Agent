@@ -1,105 +1,81 @@
-from pymongo import MongoClient, errors
-import certifi
-from dotenv import load_dotenv
+"""
+seed_faqs.py
+
+Idempotent FAQ seeder for MongoDB.
+
+- Connects to MONGO_URL from .env (same as your other scripts).
+- Creates unique index on `q_norm`.
+- Upserts FAQ documents using bulk ReplaceOne (match on q_norm).
+- Adds metadata fields: q_norm, source, created_at, updated_at.
+- Safe to re-run multiple times without creating duplicates.
+"""
+
 import os
+import re
 import sys
+import time
+from datetime import datetime
+from dotenv import load_dotenv
+from pymongo import MongoClient, errors, ReplaceOne
+import certifi
 
 # -----------------------------
 # Load environment variables
 # -----------------------------
 load_dotenv()
 MONGO_URL = os.getenv("MONGO_URL")
-
 if not MONGO_URL:
-    raise ValueError("❌ MONGO_URL not found in .env file. Please set it before running this script.")
-
-# small helper to replace host part if needed
-def replace_host(uri, old_host, new_host):
-    return uri.replace(old_host, new_host)
-
-# attempt connection helper
-def try_connect(uri, **kwargs):
-    try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000, **kwargs)
-        client.admin.command("ping")
-        return client, None
-    except Exception as e:
-        return None, e
+    raise ValueError("MONGO_URL not found in .env. Please add it to your .env file.")
 
 # -----------------------------
-# Strategy: try TLS with certifi (as you had), then fallbacks
+# Small helper: normalize question for matching
 # -----------------------------
-print("→ Attempt 1: TLS using certifi CA (recommended for secure connections)")
-client, err = try_connect(MONGO_URL, tlsCAFile=certifi.where())
-
-if client:
-    print("✅ Connected to MongoDB (TLS with certifi).")
-else:
-    print("❌ Attempt 1 failed:", repr(err))
-
-    err_text = str(err).lower() if err else ""
-    ssl_hint = any(tok in err_text for tok in ("ssl", "handshake", "tls", "certificate", "sslv3"))
-
-    print("\n→ Attempt 2: replace 'localhost' with '127.0.0.1' and try TLS")
-    if "localhost" in MONGO_URL:
-        url_127 = replace_host(MONGO_URL, "localhost", "127.0.0.1")
-        client, err2 = try_connect(url_127, tlsCAFile=certifi.where())
-        if client:
-            print("✅ Connected using 127.0.0.1 with TLS.")
-        else:
-            print("❌ Attempt 2 failed:", repr(err2))
-    else:
-        err2 = None
-        print("ℹ️  Skipped (MONGO_URL doesn't contain 'localhost').")
-
-    if not client:
-        print("\n→ Attempt 3: try plaintext connection (tls=False) — development only")
-        try:
-            client_plain, err3 = try_connect(MONGO_URL, tls=False)
-            if client_plain:
-                client = client_plain
-                print("✅ Connected with tls=False (plaintext). This means the server is not speaking TLS on this port.")
-            else:
-                print("❌ Attempt 3 failed:", repr(err3))
-        except Exception as ex:
-            print("❌ Attempt 3 raised:", repr(ex))
-
-    if not client and ssl_hint:
-        print("\n→ Attempt 4: try TLS but allow invalid certs (tlsAllowInvalidCertificates=True) — development only")
-        try:
-            client_inval, err4 = try_connect(MONGO_URL, tls=True, tlsAllowInvalidCertificates=True)
-            if client_inval:
-                client = client_inval
-                print("✅ Connected with tlsAllowInvalidCertificates=True (developer mode).")
-            else:
-                print("❌ Attempt 4 failed:", repr(err4))
-        except Exception as ex:
-            print("❌ Attempt 4 raised:", repr(ex))
-
-    if not client:
-        print("\n--- Final diagnostics & suggested checks ---")
-        print("1) If server is *not* configured for TLS: connect with tls=False (dev/local).")
-        print("2) If server *is* configured for TLS with a self-signed cert: provide the CA (tlsCAFile) or allow invalid certs (dev only).")
-        print("3) Replace 'localhost' with '127.0.0.1' in MONGO_URL to avoid hostname vs SAN mismatch in cert.")
-        print("4) Check mongod logs for 'SSL'/'TLS'/'handshake' messages and inspect mongod.conf net.tls/net.ssl settings.")
-        print("5) Temporarily disable AV/firewall to rule out middlebox closing sockets (WinErr 10054).")
-        print("6) Run OpenSSL to see if server speaks TLS: openssl s_client -connect 127.0.0.1:27017")
-        sys.exit(1)
+def normalize_question(q: str) -> str:
+    if not q:
+        return ""
+    s = q.lower().strip()
+    # remove parentheses and non-alphanumeric except & (keep words & abbreviations)
+    s = re.sub(r"\([^)]*\)", "", s)
+    s = re.sub(r"[^a-z0-9&\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 # -----------------------------
-# Connected: insert FAQs
+# Connect to MongoDB (safe TLS handling)
 # -----------------------------
+def connect_mongo(uri: str):
+    kwargs = {"serverSelectionTimeoutMS": 5000}
+    if "mongodb+srv" in uri:
+        kwargs["tlsCAFile"] = certifi.where()
+    client = MongoClient(uri, **kwargs)
+    # quick ping
+    client.admin.command("ping")
+    return client
+
+try:
+    client = connect_mongo(MONGO_URL)
+except Exception as e:
+    print("Failed to connect to MongoDB:", e)
+    sys.exit(1)
+
 db = client["chatbot_db"]
 faqs = db["faqs"]
 
-# Optional: Clear old FAQs
+# -----------------------------
+# Ensure indexes (unique normalized question)
+# -----------------------------
 try:
-    result = faqs.delete_many({})
-    print(f"🗑️  Deleted {result.deleted_count} existing FAQ documents.")
+    # create index on normalized question (q_norm) to make upserts efficient
+    faqs.create_index([("q_norm", 1)], unique=True, background=True)
+    print("Ensured unique index on q_norm.")
+except errors.OperationFailure as e:
+    print("Index creation failed (operation error):", e)
 except Exception as e:
-    print("⚠️  Failed to clear old FAQs:", e)
+    print("Index creation failed:", e)
 
-# Full GAT FAQs Dataset (each dict contains "question" and "answer")
+# -----------------------------
+# Your FAQ dataset (update/extend as needed)
+# -----------------------------
 faq_data = [
     {"question": "When was GAT established?", "answer": "Global Academy of Technology (GAT) was established in 2001 under the National Education Foundation (NEF)."},
     {"question": "Where is GAT located?", "answer": "GAT is located at Aditya Layout, Rajarajeshwari Nagar, Bengaluru, Karnataka – 560098."},
@@ -166,12 +142,66 @@ faq_data = [
     {"question": "Who is the HOD of MBA Department?", "answer": "Dr. Sanjeev Kumar Thalari is the HOD of Management Studies (MBA)."}
 ]
 
-# Insert all FAQs (if list is non-empty)
-if not faq_data:
-    print("ℹ️  No FAQ data to insert.")
+# -----------------------------
+# Build bulk upsert operations
+# -----------------------------
+ops = []
+now = datetime.utcnow()
+for doc in faq_data:
+    q = doc.get("question", "").strip()
+    a = doc.get("answer", "").strip()
+    if not q or not a:
+        continue
+
+    q_norm = normalize_question(q)
+    # Add metadata fields
+    payload = {
+        "question": q,
+        "answer": a,
+        "q_norm": q_norm,
+        "source": doc.get("source", "seed_script"),
+        "updated_at": now,
+    }
+    # For new documents set created_at same as updated_at; if upsert won't overwrite created_at if exists
+    # We use ReplaceOne with upsert: True but preserve created_at when present via $setOnInsert in update form.
+    # Use an update document instead of replace so we can keep fields like created_at.
+    update_doc = {
+        "$set": payload,
+        "$setOnInsert": {"created_at": now}
+    }
+
+    ops.append( ReplaceOne({"q_norm": q_norm}, update_doc, upsert=True) )
+
+# -----------------------------
+# Execute bulk operation
+# -----------------------------
+if not ops:
+    print("No FAQ documents to process.")
 else:
+    print(f"Performing bulk upsert for {len(ops)} FAQ documents...")
     try:
-        faqs.insert_many(faq_data)
-        print(f"✅ Inserted {len(faq_data)} FAQs successfully!")
+        result = faqs.bulk_write(ops, ordered=False)
+        print("Bulk operation complete.")
+        print("Inserted:", getattr(result, "upserted_count", 0))
+        print("Matched:", getattr(result, "matched_count", 0))
+        print("Modified:", getattr(result, "modified_count", 0))
     except Exception as e:
-        print("❌ Failed to insert FAQs:", e)
+        print("Bulk upsert failed:", e)
+        # Try fallback: upsert one-by-one to get per-doc errors
+        for i, op in enumerate(ops):
+            try:
+                faqs.bulk_write([op], ordered=False)
+            except Exception as ex:
+                print(f"Failed to upsert doc #{i}: {ex}")
+
+# -----------------------------
+# Optionally: print sample entries
+# -----------------------------
+print("\nSample documents (first 5):")
+try:
+    for d in faqs.find({}, {"question": 1, "q_norm": 1, "answer": 1}).limit(5):
+        print("-", d.get("question"), "->", d.get("q_norm"))
+except Exception as e:
+    print("Failed to read sample docs:", e)
+
+print("\n✅ Done. FAQs are upserted into the database.")
