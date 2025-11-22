@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import './theme-toggle.css';
+import './Theme-toggle.css';
 
 export default function ThemeToggle({ className = '' }) {
   const getInitial = () => {
