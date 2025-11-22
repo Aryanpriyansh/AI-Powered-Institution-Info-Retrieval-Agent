@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EduBot Assistant</title>
+
+    <!-- Fonts (kept from your original file) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
+
+    <!-- Inline pre-render script to set theme early and avoid flash -->
+    <script>
+      (function () {
+        try {
+          const saved = localStorage.getItem('theme'); // 'dark' | 'light' | null
+          if (saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            return;
+          }
+          if (saved === 'light') {
+            document.documentElement.removeAttribute('data-theme');
+            return;
+          }
+          // no saved preference -> respect OS preference
+          const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (prefersDark) document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (e) {
+          // ignore (e.g., localStorage blocked)
+        }
+      })();
+    </script>
+
+    <!-- App stylesheet -->
+    <link rel="stylesheet" href="/src/index.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
