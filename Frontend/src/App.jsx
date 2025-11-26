@@ -1,10 +1,11 @@
-
 import React, { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import ChatHeader from "./components/ChatHeader";
 import Messages from "./components/Messages";
 import ChatInput from "./components/ChatInput";
 import "./App.css";
+
+const API_BASE = "https://ai-powered-institution-info-retrieval-ofgn.onrender.com";
 
 export default function App() {
 
@@ -13,7 +14,6 @@ export default function App() {
   //   document.querySelectorAll(".app-overlay, .global-overlay, .fullscreen-overlay").forEach(el => el.remove());
   // }, []);
 
-  
   const [messages, setMessages] = useState([
     {
       id: Date.now(),
@@ -24,10 +24,9 @@ export default function App() {
   ]);
 
   const [inputMessage, setInputMessage] = useState("");
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // you can set false if you want closed by default
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [sending, setSending] = useState(false);
 
- 
   const quickQuestions = [
     { id: 1, iconName: "dollar", text: "Admission & Exams", query: "Which entrance exams are accepted for admission?" },
     { id: 2, iconName: "file", text: "NAAC & Accreditation", query: "Is GAT NAAC accredited?" },
@@ -36,18 +35,15 @@ export default function App() {
     { id: 5, iconName: "users", text: "Placements", query: "Which companies visit GAT for recruitment?" }
   ];
 
-  
   const addMessage = (msg) => setMessages(prev => [...prev, msg]);
 
   const replaceMessageById = (id, newFields) => {
     setMessages(prev => prev.map(m => (m.id === id ? { ...m, ...newFields } : m)));
   };
 
-  // main send logic: shows user msg, adds a processing placeholder, calls backend, replaces placeholder
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || sending) return;
 
-    // user message shown immediately
     const userMsg = {
       id: Date.now() + Math.random(),
       text: inputMessage,
@@ -57,7 +53,6 @@ export default function App() {
     addMessage(userMsg);
     setInputMessage("");
 
-    // add placeholder bot message (processing)
     const placeholderId = Date.now() + Math.random();
     addMessage({
       id: placeholderId,
@@ -69,7 +64,7 @@ export default function App() {
     setSending(true);
 
     try {
-      const res = await fetch("/chat", {
+      const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -78,7 +73,6 @@ export default function App() {
       });
 
       if (!res.ok) {
-        // replace placeholder with an error message
         replaceMessageById(placeholderId, {
           text: `Error: server returned ${res.status}`,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -87,13 +81,11 @@ export default function App() {
       }
 
       const data = await res.json();
-      // expected: { response: "..." } from backend
       replaceMessageById(placeholderId, {
         text: data?.response ?? "No response from server.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       });
     } catch (err) {
-      // network / fetch error
       replaceMessageById(placeholderId, {
         text: "Error: Could not reach server. Please try again.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -105,7 +97,6 @@ export default function App() {
   };
 
   return (
-    // app-container controls the grid (sidebar column + main column)
     <div className={`app-container ${isSidebarOpen ? "sidebar-open" : "sidebar-closed"}`}>
       <Sidebar
         isSidebarOpen={isSidebarOpen}
@@ -115,13 +106,8 @@ export default function App() {
       />
 
       <div className="main-content" role="main">
-        {/* ChatHeader expected to have menu toggle; pass props */}
         <ChatHeader isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} />
-
-        {/* Messages reads the `messages` array and renders them */}
         <Messages messages={messages} />
-
-        {/* ChatInput handles input UI; passes send handler */}
         <ChatInput
           inputMessage={inputMessage}
           setInputMessage={setInputMessage}
