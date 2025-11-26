@@ -3,3 +3,8 @@ uvicorn
 pydantic
 requests
 python-dotenv
+pymongo
+dnspython
+certifi
+google-generativeai
+rapidfuzz
